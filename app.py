@@ -1,93 +1,118 @@
 import streamlit as st
 import cv2
+import numpy as np
 import tempfile
 import os
-import numpy as np
 
-st.title("GDR 스윙 정밀 오버레이 분석기")
-st.markdown("두 스윙 영상의 **시간(프레임)**과 **공간(공 위치)**을 맞춰 시각적으로 비교합니다.")
+st.set_page_config(layout="wide", page_title="골프 스윙 오버레이")
+st.title("골프 스윙 오버레이 비교")
 
-video1_file = st.file_uploader("정상 스윙 (Video A)", type=['mp4', 'mov'])
-video2_file = st.file_uploader("비교 스윙 (Video B)", type=['mp4', 'mov'])
+# 1. 파일 업로드
+col_a, col_b = st.columns(2)
+with col_a:
+    video_a_file = st.file_uploader("Video A 업로드 (기준 영상)", type=["mp4", "mov"])
+with col_b:
+    video_b_file = st.file_uploader("Video B 업로드 (이동시킬 영상)", type=["mp4", "mov"])
 
-if video1_file and video2_file:
-    tfile1 = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-    tfile1.write(video1_file.read())
-    tfile2 = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-    tfile2.write(video2_file.read())
+if video_a_file and video_b_file:
+    # 임시 파일로 저장하여 OpenCV로 읽기
+    tfile_a = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    tfile_a.write(video_a_file.read())
+    tfile_b = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    tfile_b.write(video_b_file.read())
 
-    cap1 = cv2.VideoCapture(tfile1.name)
-    cap2 = cv2.VideoCapture(tfile2.name)
+    cap_a = cv2.VideoCapture(tfile_a.name)
+    cap_b = cv2.VideoCapture(tfile_b.name)
+    
+    frames_a = int(cap_a.get(cv2.CAP_PROP_FRAME_COUNT))
+    frames_b = int(cap_b.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    total_frames1 = int(cap1.get(cv2.CAP_PROP_FRAME_COUNT))
-    total_frames2 = int(cap2.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = int(cap1.get(cv2.CAP_PROP_FPS))
-    width = int(cap1.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap1.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    st.markdown("---")
+    st.subheader("1. 시간 및 공간 동기화 (미리보기 화면)")
+    st.write("슬라이더를 움직여 임팩트 순간과 공의 위치를 맞추세요.")
 
-    st.write("---")
-    st.write("### 1. 시간 동기화 (프레임 맞추기)")
+    # UI 조작부
     col1, col2 = st.columns(2)
     with col1:
-        sync_frame1 = st.slider("Video A 임팩트 프레임", 0, total_frames1-1, int(total_frames1/2))
+        impact_a = st.slider("Video A 임팩트 프레임", 0, frames_a-1, frames_a//2)
     with col2:
-        sync_frame2 = st.slider("Video B 임팩트 프레임", 0, total_frames2-1, int(total_frames2/2))
+        impact_b = st.slider("Video B 임팩트 프레임", 0, frames_b-1, frames_b//2)
 
-    st.write("### 2. 공간 동기화 (공 위치 맞추기)")
-    st.markdown("Video A의 공 위치를 기준으로 Video B를 상하좌우로 이동시킵니다.")
-    col3, col4 = st.columns(2)
-    with col3:
-        shift_x = st.slider("Video B 좌우 이동 (X축)", -300, 300, 0, step=5)
-    with col4:
-        shift_y = st.slider("Video B 상하 이동 (Y축)", -300, 300, 0, step=5)
+    x_offset = st.slider("Video B 좌우 이동 (X축)", -500, 500, 0)
+    y_offset = st.slider("Video B 상하 이동 (Y축)", -500, 500, 0)
 
+    # 미리보기: 지정된 프레임 읽기
+    cap_a.set(cv2.CAP_PROP_POS_FRAMES, impact_a)
+    ret_a, frame_a = cap_a.read()
+    cap_b.set(cv2.CAP_PROP_POS_FRAMES, impact_b)
+    ret_b, frame_b = cap_b.read()
+
+    if ret_a and ret_b:
+        # 크기 맞추기 (Video A 기준)
+        h, w = frame_a.shape[:2]
+        frame_b_resized = cv2.resize(frame_b, (w, h))
+        
+        # 이동 행렬 적용 (X, Y 오프셋)
+        M = np.float32([[1, 0, x_offset], [0, 1, y_offset]])
+        translated_b = cv2.warpAffine(frame_b_resized, M, (w, h))
+
+        # 반투명 오버레이 처리 (50% 씩 섞기)
+        overlay = cv2.addWeighted(frame_a, 0.5, translated_b, 0.5, 0)
+        
+        # BGR -> RGB 변환 후 화면 출력
+        overlay_rgb = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
+        st.image(overlay_rgb, caption="임팩트 시점 오버레이 미리보기", use_column_width=True)
+
+    st.markdown("---")
     if st.button("오버레이 영상 렌더링 시작"):
-        with st.spinner("프레임을 계산하고 병합 중입니다. (약 30초~1분 소요)..."):
-            output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v') 
-            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        with st.spinner("처음부터 스윙 궤적을 렌더링 중입니다..."):
+            out_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            
+            fps = cap_a.get(cv2.CAP_PROP_FPS)
+            if fps == 0 or np.isnan(fps): fps = 30
+            
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(out_file.name, fourcc, fps, (w, h))
 
-            cap1.set(cv2.CAP_PROP_POS_FRAMES, sync_frame1)
-            cap2.set(cv2.CAP_PROP_POS_FRAMES, sync_frame2)
+            # 임팩트 시점을 기준으로 영상 시작점 계산 (스윙 시작부터 렌더링)
+            if impact_a > impact_b:
+                cap_a.set(cv2.CAP_PROP_POS_FRAMES, impact_a - impact_b)
+                cap_b.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            else:
+                cap_a.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                cap_b.set(cv2.CAP_PROP_POS_FRAMES, impact_b - impact_a)
 
-            # Video B 이동을 위한 변환 행렬 (Affine Matrix) 설정
-            M = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
-
+            # 프레임 병합 루프
             while True:
-                ret1, frame1 = cap1.read()
-                ret2, frame2 = cap2.read()
+                ret_a_loop, f_a = cap_a.read()
+                ret_b_loop, f_b = cap_b.read()
 
-                if not ret1 or not ret2:
-                    break
-
-                if frame1.shape != frame2.shape:
-                    frame2 = cv2.resize(frame2, (width, height))
-
-                # Video B를 지정한 픽셀만큼 밀어내기
-                frame2_shifted = cv2.warpAffine(frame2, M, (width, height))
-
-                # 50:50 반투명 오버레이
-                blended = cv2.addWeighted(frame1, 0.5, frame2_shifted, 0.5, 0)
-                out.write(blended)
-
-            cap1.release()
-            cap2.release()
+                # 둘 중 하나라도 영상이 끝나면 루프 종료
+                if not ret_a_loop or not ret_b_loop:
+                    break 
+                
+                f_b_resized = cv2.resize(f_b, (w, h))
+                translated_b_loop = cv2.warpAffine(f_b_resized, M, (w, h))
+                merged = cv2.addWeighted(f_a, 0.5, translated_b_loop, 0.5, 0)
+                out.write(merged)
+            
             out.release()
-
+            cap_a.release()
+            cap_b.release()
+            
+            # 웹 브라우저 재생 및 깨짐 방지를 위한 코덱 변환 (ffmpeg 활용)
+            final_output = "final_output.mp4"
+            os.system(f"ffmpeg -i {out_file.name} -vcodec libx264 -y {final_output}")
+            
             st.success("렌더링 완료!")
             
-            # 스트림릿에서 바로 재생
-            st.video(output_path)
-            
-            # 모바일 브라우저 코덱 호환성 문제를 위한 다운로드 버튼 제공
-            with open(output_path, "rb") as video_file:
-                st.download_button(
-                    label="결과 영상 다운로드 (재생 안 될 경우)",
-                    data=video_file,
-                    file_name="swing_overlay_result.mp4",
-                    mime="video/mp4"
-                )
-
-            os.remove(tfile1.name)
-            os.remove(tfile2.name)
-            os.remove(output_path)
+            # FFmpeg 변환 성공 시 H.264 영상 출력, 실패 시 원본 영상 출력
+            if os.path.exists(final_output) and os.path.getsize(final_output) > 0:
+                st.video(final_output)
+                with open(final_output, "rb") as f:
+                    st.download_button("결과 영상 다운로드", f, file_name="swing_overlay_result.mp4")
+            else:
+                st.warning("ffmpeg 인코딩에 실패하여 원본 코덱으로 출력합니다. 기기에 따라 재생이 안 될 수 있습니다.")
+                st.video(out_file.name)
+                with open(out_file.name, "rb") as f:
+                    st.download_button("결과 영상 다운로드 (원본 코덱)", f, file_name="swing_overlay_raw.mp4")
